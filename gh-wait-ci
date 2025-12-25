@@ -63,12 +63,7 @@ get_pr_info() {
     if pr_json=$(gh pr view --json number,url 2>/dev/null); then
         PR_NUM=$(echo "$pr_json" | jq -r .number)
         PR_URL=$(echo "$pr_json" | jq -r .url)
-        info "PR: #$PR_NUM"
-        echo "  $PR_URL"
     fi
-    info "Commit URL:"
-    echo "  $COMMIT_URL"
-    echo ""
 }
 
 find_run() {
@@ -116,8 +111,6 @@ find_run() {
 }
 
 wait_for_run() {
-    echo "  $RUN_URL"
-    echo ""
     info "Waiting for CI to complete..."
     echo ""
 
