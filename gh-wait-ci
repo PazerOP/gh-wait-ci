@@ -2,10 +2,9 @@
 set -euo pipefail
 
 # Wait for GitHub Actions CI to complete and report results
-# Usage: wait-ci.sh [run-id]
-# If no run-id provided, finds the run for the current commit
+# Usage: gh wait-ci [run-id]
+# If no run-id provided, waits for ALL runs for the current commit
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -66,22 +65,20 @@ get_pr_info() {
     fi
 }
 
-find_run() {
+find_runs() {
     local run_id="${1:-}"
 
     if [[ -n "$run_id" ]]; then
-        RUN_ID="$run_id"
-        RUN_URL=$(gh run view "$RUN_ID" --json url -q .url 2>/dev/null || echo "")
-        RUN_NAME=$(gh run view "$RUN_ID" --json name -q .name 2>/dev/null || echo "Run $RUN_ID")
-        info "Watching specified run: $RUN_NAME (ID: $RUN_ID)"
+        RUN_IDS=("$run_id")
+        info "Watching specified run: $run_id"
         return
     fi
 
-    info "Finding workflow run for commit $SHORT_COMMIT..."
+    info "Finding workflow runs for commit $SHORT_COMMIT..."
 
     local runs_json run_count
     for i in {1..5}; do
-        runs_json=$(gh run list --commit "$COMMIT" --json databaseId,status,conclusion,url,name,event --limit 10 2>/dev/null || echo "[]")
+        runs_json=$(gh run list --commit "$COMMIT" --json databaseId,status,conclusion,name --limit 10 2>/dev/null || echo "[]")
         run_count=$(echo "$runs_json" | jq 'length')
 
         if [[ "$run_count" -gt 0 ]]; then
@@ -99,61 +96,114 @@ find_run() {
         exit 1
     fi
 
+    # Store run IDs
+    mapfile -t RUN_IDS < <(echo "$runs_json" | jq -r '.[].databaseId')
+
     info "Found $run_count workflow run(s):"
-    echo "$runs_json" | jq -r '.[] | "  [\(.databaseId)] \(.name) - \(.status) \(.conclusion // "")"'
+    echo "$runs_json" | jq -r '.[] | "  \(.databaseId) \(.name)"'
     echo ""
-
-    RUN_ID=$(echo "$runs_json" | jq -r '.[0].databaseId')
-    RUN_NAME=$(echo "$runs_json" | jq -r '.[0].name')
-    RUN_URL=$(echo "$runs_json" | jq -r '.[0].url')
-
-    info "Watching run: $RUN_NAME (ID: $RUN_ID)"
 }
 
-wait_for_run() {
-    info "Waiting for CI to complete..."
+wait_for_runs() {
+    info "Waiting for all runs to complete..."
     echo ""
 
-    if gh run watch "$RUN_ID" --exit-status; then
-        CONCLUSION="success"
-    else
-        CONCLUSION="failure"
-    fi
+    # Track status for each job: "run_id:job_name" -> "status:conclusion"
+    declare -A last_job_status
+
+    while true; do
+        local all_done=true
+
+        for run_id in "${RUN_IDS[@]}"; do
+            local run_json run_status run_name
+            run_json=$(gh run view "$run_id" --json status,conclusion,name,jobs 2>/dev/null || echo "{}")
+            run_status=$(echo "$run_json" | jq -r '.status // "unknown"')
+            run_name=$(echo "$run_json" | jq -r '.name // "unknown"')
+
+            # Get jobs and their statuses - use process substitution to avoid subshell
+            local jobs_json
+            jobs_json=$(echo "$run_json" | jq -c '.jobs // []')
+
+            while read -r job; do
+                [[ -z "$job" ]] && continue
+                local job_name job_status job_conclusion job_key current
+                job_name=$(echo "$job" | jq -r '.name')
+                job_status=$(echo "$job" | jq -r '.status')
+                job_conclusion=$(echo "$job" | jq -r '.conclusion // ""')
+                job_key="${run_id}:${job_name}"
+                current="${job_status}:${job_conclusion}"
+
+                # Print if changed
+                if [[ "${last_job_status[$job_key]:-}" != "$current" ]]; then
+                    if [[ "$job_status" == "completed" ]]; then
+                        if [[ "$job_conclusion" == "success" ]]; then
+                            echo "  ✅ $run_name / $job_name"
+                        else
+                            echo "  ❌ $run_name / $job_name: $job_conclusion"
+                        fi
+                    elif [[ "$job_status" == "in_progress" ]]; then
+                        echo "  🔄 $run_name / $job_name"
+                    elif [[ "$job_status" == "queued" ]]; then
+                        echo "  ⏳ $run_name / $job_name: queued"
+                    fi
+                    last_job_status[$job_key]="$current"
+                fi
+            done < <(echo "$jobs_json" | jq -c '.[]')
+
+            if [[ "$run_status" != "completed" ]]; then
+                all_done=false
+            fi
+        done
+
+        if $all_done; then
+            break
+        fi
+
+        sleep 5
+    done
     echo ""
 }
 
 show_results() {
-    local result_json final_conclusion
-    result_json=$(gh run view "$RUN_ID" --json conclusion,jobs,url)
-    final_conclusion=$(echo "$result_json" | jq -r .conclusion)
-    RUN_URL=$(echo "$result_json" | jq -r .url)
+    local all_success=true
 
-    echo "════════════════════════════════════════════════════════════════"
-    if [[ "$final_conclusion" == "success" ]]; then
-        success "✓ CI PASSED"
-    else
-        error "✗ CI FAILED"
-    fi
-    echo "════════════════════════════════════════════════════════════════"
-    echo ""
+    for run_id in "${RUN_IDS[@]}"; do
+        local result_json conclusion name url
+        result_json=$(gh run view "$run_id" --json conclusion,jobs,url,name)
+        conclusion=$(echo "$result_json" | jq -r '.conclusion')
+        name=$(echo "$result_json" | jq -r '.name')
+        url=$(echo "$result_json" | jq -r '.url')
 
-    info "Jobs:"
-    echo "$result_json" | jq -r '.jobs[] | "  \(if .conclusion == "success" then "✅" elif .conclusion == "failure" then "❌" elif .conclusion == "skipped" then "⏭️" else "⏳" end) \(.name)"'
-    echo ""
+        echo "════════════════════════════════════════════════════════════════"
+        if [[ "$conclusion" == "success" ]]; then
+            success "✓ $name PASSED"
+        else
+            error "✗ $name FAILED"
+            all_success=false
+        fi
+        echo "════════════════════════════════════════════════════════════════"
+        echo ""
+
+        info "Jobs:"
+        echo "$result_json" | jq -r '.jobs[] | "  \(if .conclusion == "success" then "✅" elif .conclusion == "failure" then "❌" elif .conclusion == "skipped" then "⏭️" else "⏳" end) \(.name)"'
+        echo ""
+
+        echo "     Run:  $url"
+
+        if [[ "$conclusion" != "success" ]]; then
+            warn "Failed job logs:"
+            echo ""
+            gh run view "$run_id" --log-failed 2>/dev/null || true
+            echo ""
+        fi
+    done
 
     info "Links:"
-    echo "     Run:  $RUN_URL"
     echo "  Commit:  $COMMIT_URL"
     [[ -n "$PR_URL" ]] && echo "      PR:  $PR_URL"
     echo ""
 
-    if [[ "$final_conclusion" != "success" ]]; then
-        warn "Failed job logs:"
-        echo ""
-        gh run view "$RUN_ID" --log-failed 2>/dev/null || true
-    fi
-
-    [[ "$final_conclusion" == "success" ]]
+    $all_success
 }
 
 main() {
@@ -162,8 +212,8 @@ main() {
     get_context
     print_context
     get_pr_info
-    find_run "${1:-}"
-    wait_for_run
+    find_runs "${1:-}"
+    wait_for_runs
     show_results
 }
 
