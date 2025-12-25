@@ -142,9 +142,9 @@ show_results() {
     echo ""
 
     info "Links:"
-    echo "  Run: $RUN_URL"
+    echo "  Run:    $RUN_URL"
     echo "  Commit: $COMMIT_URL"
-    [[ -n "$PR_URL" ]] && echo "  PR: $PR_URL"
+    [[ -n "$PR_URL" ]] && echo "  PR:     $PR_URL"
     echo ""
 
     if [[ "$final_conclusion" != "success" ]]; then
