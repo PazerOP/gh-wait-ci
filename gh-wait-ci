@@ -108,11 +108,16 @@ wait_for_runs() {
     info "Waiting for all runs to complete..."
     echo ""
 
-    # Track status for each job: "run_id:job_name" -> "status:conclusion"
-    declare -A last_job_status
+    # Track previous state to detect changes
+    local last_state=""
+    local first_print=true
 
     while true; do
         local all_done=true
+        local total_jobs=0
+        local completed_jobs=0
+        local current_state=""
+        local output=""
 
         for run_id in "${RUN_IDS[@]}"; do
             local run_json run_status run_name
@@ -120,33 +125,34 @@ wait_for_runs() {
             run_status=$(echo "$run_json" | jq -r '.status // "unknown"')
             run_name=$(echo "$run_json" | jq -r '.name // "unknown"')
 
-            # Get jobs and their statuses - use process substitution to avoid subshell
             local jobs_json
             jobs_json=$(echo "$run_json" | jq -c '.jobs // []')
 
             while read -r job; do
                 [[ -z "$job" ]] && continue
-                local job_name job_status job_conclusion job_key current
+                local job_name job_status job_conclusion
                 job_name=$(echo "$job" | jq -r '.name')
                 job_status=$(echo "$job" | jq -r '.status')
                 job_conclusion=$(echo "$job" | jq -r '.conclusion // ""')
-                job_key="${run_id}:${job_name}"
-                current="${job_status}:${job_conclusion}"
 
-                # Print if changed
-                if [[ "${last_job_status[$job_key]:-}" != "$current" ]]; then
-                    if [[ "$job_status" == "completed" ]]; then
-                        if [[ "$job_conclusion" == "success" ]]; then
-                            echo "  ✅ $run_name / $job_name"
-                        else
-                            echo "  ❌ $run_name / $job_name: $job_conclusion"
-                        fi
-                    elif [[ "$job_status" == "in_progress" ]]; then
-                        echo "  🔄 $run_name / $job_name"
-                    elif [[ "$job_status" == "queued" ]]; then
-                        echo "  ⏳ $run_name / $job_name: queued"
+                ((total_jobs++)) || true
+                current_state+="${run_id}:${job_name}:${job_status}:${job_conclusion}|"
+
+                if [[ "$job_status" == "completed" ]]; then
+                    ((completed_jobs++)) || true
+                    if [[ "$job_conclusion" == "success" ]]; then
+                        output+="  ✅ $run_name / $job_name"$'\n'
+                    elif [[ "$job_conclusion" == "skipped" ]]; then
+                        output+="  ⏭️  $run_name / $job_name (skipped)"$'\n'
+                    else
+                        output+="  ❌ $run_name / $job_name ($job_conclusion)"$'\n'
                     fi
-                    last_job_status[$job_key]="$current"
+                elif [[ "$job_status" == "in_progress" ]]; then
+                    output+="  🔄 $run_name / $job_name"$'\n'
+                elif [[ "$job_status" == "queued" || "$job_status" == "waiting" ]]; then
+                    output+="  ⏳ $run_name / $job_name"$'\n'
+                else
+                    output+="  ⏳ $run_name / $job_name ($job_status)"$'\n'
                 fi
             done < <(echo "$jobs_json" | jq -c '.[]')
 
@@ -154,6 +160,28 @@ wait_for_runs() {
                 all_done=false
             fi
         done
+
+        # Calculate percentage
+        local percent=0
+        if [[ $total_jobs -gt 0 ]]; then
+            percent=$((completed_jobs * 100 / total_jobs))
+        fi
+
+        # Reprint if state changed
+        if [[ "$current_state" != "$last_state" ]]; then
+            if [[ "$first_print" != "true" ]]; then
+                # Move cursor up and clear previous output
+                local lines_to_clear=$((total_jobs + 1))
+                for ((i=0; i<lines_to_clear; i++)); do
+                    echo -ne "\033[A\033[2K"
+                done
+            fi
+            first_print=false
+
+            info "Progress: $completed_jobs/$total_jobs ($percent%)"
+            echo -n "$output"
+            last_state="$current_state"
+        fi
 
         if $all_done; then
             break
@@ -185,15 +213,34 @@ show_results() {
         echo ""
 
         info "Jobs:"
-        echo "$result_json" | jq -r '.jobs[] | "  \(if .conclusion == "success" then "✅" elif .conclusion == "failure" then "❌" elif .conclusion == "skipped" then "⏭️" else "⏳" end) \(.name)"'
+        while read -r job; do
+            [[ -z "$job" ]] && continue
+            local job_name job_conclusion job_id icon line
+            job_name=$(echo "$job" | jq -r '.name')
+            job_conclusion=$(echo "$job" | jq -r '.conclusion')
+            job_id=$(echo "$job" | jq -r '.databaseId')
+
+            case "$job_conclusion" in
+                success) icon="✅" ;;
+                failure) icon="❌" ;;
+                skipped) icon="⏭️ " ;;
+                *) icon="⏳" ;;
+            esac
+
+            if [[ "$job_conclusion" == "failure" ]]; then
+                echo "  $icon $job_name  →  gh run view --log --job $job_id"
+            else
+                echo "  $icon $job_name"
+            fi
+        done < <(echo "$result_json" | jq -c '.jobs[]')
         echo ""
 
         echo "     Run:  $url"
 
         if [[ "$conclusion" != "success" ]]; then
-            warn "Failed job logs:"
             echo ""
-            gh run view "$run_id" --log-failed 2>/dev/null || true
+            warn "View all failed logs:"
+            echo "  gh run view $run_id --log-failed"
             echo ""
         fi
     done

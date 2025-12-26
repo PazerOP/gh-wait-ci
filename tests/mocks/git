@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Mock git CLI for testing
+
+case "$1" in
+    rev-parse)
+        if [[ "$2" == "--git-dir" ]]; then
+            echo ".git"
+        elif [[ "$2" == "HEAD" ]]; then
+            echo "abc123def456789"
+        elif [[ "$2" == "--short" ]]; then
+            echo "abc123d"
+        fi
+        ;;
+    log)
+        # Pretend no unpushed commits
+        echo ""
+        ;;
+    branch)
+        if [[ "$2" == "--show-current" ]]; then
+            echo "main"
+        fi
+        ;;
+    *)
+        echo "Mock git: unknown command $*" >&2
+        exit 1
+        ;;
+esac
