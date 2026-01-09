@@ -309,7 +309,7 @@ func waitForRuns(runIDs []int, failFast bool) (bool, error) {
 
 		if failFast && hasFailure {
 			fmt.Println()
-			printWarn("Failure detected, exiting early (--fail-fast)")
+			printWarn("Failure detected, exiting early (use --keep-going to wait for all jobs)")
 			return true, nil
 		}
 
@@ -387,11 +387,12 @@ func showResults(runIDs []int, ctx *Context) bool {
 }
 
 func main() {
-	failFast := flag.Bool("fail-fast", false, "Exit immediately when any job fails")
+	keepGoing := flag.Bool("keep-going", false, "Continue watching even after a job fails (default: exit on first failure)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [run-id]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Wait for GitHub Actions CI to complete and report results.\n")
 		fmt.Fprintf(os.Stderr, "If no run-id provided, waits for ALL runs for the current commit.\n\n")
+		fmt.Fprintf(os.Stderr, "By default, exits immediately when any job fails. Use --keep-going to wait for all jobs.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 	}
@@ -427,13 +428,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	hasFailure, err := waitForRuns(runIDs, *failFast)
+	failFast := !*keepGoing
+	hasFailure, err := waitForRuns(runIDs, failFast)
 	if err != nil {
 		printError(err.Error())
 		os.Exit(1)
 	}
 
-	if *failFast && hasFailure {
+	if failFast && hasFailure {
 		showResults(runIDs, ctx)
 		os.Exit(1)
 	}
