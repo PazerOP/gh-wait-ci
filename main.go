@@ -97,30 +97,36 @@ func checkGitRepo() error {
 	return nil
 }
 
-func checkPushed() error {
+// checkPushed checks if there are unpushed commits. Returns the commit to use
+// (either HEAD if all pushed, or the upstream commit if unpushed commits exist)
+// and a boolean indicating if we fell back to the upstream commit.
+func checkPushed() (string, bool, error) {
 	unpushed, err := runCommand("git", "log", "@{u}..HEAD", "--oneline")
 	if err != nil {
-		// If there's no upstream, that's a different error - allow it
-		return nil
+		// If there's no upstream, use HEAD (can't determine pushed state)
+		return "HEAD", false, nil
 	}
 	if unpushed != "" {
-		printWarn("Unpushed commits detected:")
-		fmt.Println(unpushed)
-		return fmt.Errorf("push your changes first before waiting for CI")
+		// Get the upstream commit to use instead
+		upstreamCommit, err := runCommand("git", "rev-parse", "@{u}")
+		if err != nil {
+			return "", false, fmt.Errorf("could not get upstream commit: %w", err)
+		}
+		return upstreamCommit, true, nil
 	}
-	return nil
+	return "HEAD", false, nil
 }
 
-func getContext() (*Context, error) {
+func getContext(commitRef string) (*Context, error) {
 	ctx := &Context{}
 
-	commit, err := runCommand("git", "rev-parse", "HEAD")
+	commit, err := runCommand("git", "rev-parse", commitRef)
 	if err != nil {
 		return nil, fmt.Errorf("could not get commit: %w", err)
 	}
 	ctx.Commit = commit
 
-	shortCommit, err := runCommand("git", "rev-parse", "--short", "HEAD")
+	shortCommit, err := runCommand("git", "rev-parse", "--short", commitRef)
 	if err != nil {
 		return nil, fmt.Errorf("could not get short commit: %w", err)
 	}
@@ -269,6 +275,9 @@ func waitForRuns(runIDs []int, failFast bool) (bool, error) {
 						line = fmt.Sprintf("  ✅ %s / %s\n", detail.Name, job.Name)
 					case "skipped":
 						line = fmt.Sprintf("  ⏭️  %s / %s (skipped)\n", detail.Name, job.Name)
+					case "cancelled":
+						line = fmt.Sprintf("  ⛔ %s / %s (cancelled)\n", detail.Name, job.Name)
+						hasFailure = true
 					default:
 						line = fmt.Sprintf("  ❌ %s / %s (%s)\n", detail.Name, job.Name, job.Conclusion)
 						hasFailure = true
@@ -352,6 +361,8 @@ func showResults(runIDs []int, ctx *Context) bool {
 				icon = "✅"
 			case "failure":
 				icon = "❌"
+			case "cancelled":
+				icon = "⛔"
 			case "skipped":
 				icon = "⏭️ "
 			default:
@@ -402,12 +413,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := checkPushed(); err != nil {
-		printError(err.Error())
-		os.Exit(1)
+	runID := ""
+	if flag.NArg() > 0 {
+		runID = flag.Arg(0)
 	}
 
-	ctx, err := getContext()
+	// Determine which commit to use
+	commitRef := "HEAD"
+	if runID == "" {
+		// Only check for unpushed commits when auto-detecting runs
+		ref, usedUpstream, err := checkPushed()
+		if err != nil {
+			printError(err.Error())
+			os.Exit(1)
+		}
+		if usedUpstream {
+			printWarn("Warning: You have unpushed commits. Watching the latest pushed commit instead.")
+			fmt.Println()
+		}
+		commitRef = ref
+	}
+
+	ctx, err := getContext(commitRef)
 	if err != nil {
 		printError(err.Error())
 		os.Exit(1)
@@ -415,11 +442,6 @@ func main() {
 
 	printContext(ctx)
 	getPRInfo(ctx)
-
-	runID := ""
-	if flag.NArg() > 0 {
-		runID = flag.Arg(0)
-	}
 
 	runIDs, err := findRuns(ctx, runID)
 	if err != nil {
