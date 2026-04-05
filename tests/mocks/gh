@@ -6,6 +6,15 @@
 # MOCK_RUN_VIEW_JSON - response for gh run view (can be a function of run_id)
 # MOCK_REPO_JSON - response for gh repo view
 # MOCK_PR_JSON - response for gh pr view
+# MOCK_API_REPO_JSON - response for gh api repos/{owner}/{repo}
+# MOCK_API_COMMITS_JSON - response for gh api repos/{owner}/{repo}/commits/{branch}
+
+# Strip -R <repo> flag if present (used by --repo mode)
+MOCK_TARGET_REPO=""
+if [[ "$1" == "-R" ]]; then
+    MOCK_TARGET_REPO="$2"
+    shift 2
+fi
 
 case "$1" in
     repo)
@@ -44,6 +53,25 @@ case "$1" in
             else
                 echo '{"status": "completed", "conclusion": "success", "name": "CI", "url": "https://github.com/test-owner/test-repo/actions/runs/12345", "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]}'
             fi
+        fi
+        ;;
+    api)
+        endpoint="$2"
+        if [[ "$endpoint" == repos/*/commits/* ]]; then
+            if [[ -n "${MOCK_API_COMMITS_JSON:-}" ]]; then
+                echo "$MOCK_API_COMMITS_JSON"
+            else
+                echo '{"sha": "abc123def456789"}'
+            fi
+        elif [[ "$endpoint" == repos/* ]]; then
+            if [[ -n "${MOCK_API_REPO_JSON:-}" ]]; then
+                echo "$MOCK_API_REPO_JSON"
+            else
+                echo '{"default_branch": "main"}'
+            fi
+        else
+            echo "Mock gh api: unknown endpoint $endpoint" >&2
+            exit 1
         fi
         ;;
     *)
