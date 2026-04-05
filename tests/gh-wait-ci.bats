@@ -110,6 +110,61 @@ run_script() {
     [[ "$status" -ne 0 ]]
 }
 
+@test "--repo flag targets specified repository" {
+    export MOCK_RUN_LIST_JSON='[{"databaseId": 99999, "status": "completed", "conclusion": "success", "name": "CI"}]'
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/other-owner/other-repo/actions/runs/99999",
+        "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]
+    }'
+    export MOCK_API_REPO_JSON='{"default_branch": "main"}'
+    export MOCK_API_COMMITS_JSON='{"sha": "def456abc789012"}'
+
+    run run_script --repo other-owner/other-repo
+
+    [[ "$output" == *"other-owner/other-repo"* ]]
+    [[ "$output" == *"PASSED"* ]]
+    [[ "$status" -eq 0 ]]
+}
+
+@test "-R short flag works same as --repo" {
+    export MOCK_RUN_LIST_JSON='[{"databaseId": 99999, "status": "completed", "conclusion": "success", "name": "CI"}]'
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/other-owner/other-repo/actions/runs/99999",
+        "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]
+    }'
+    export MOCK_API_REPO_JSON='{"default_branch": "main"}'
+    export MOCK_API_COMMITS_JSON='{"sha": "def456abc789012"}'
+
+    run run_script -R other-owner/other-repo
+
+    [[ "$output" == *"other-owner/other-repo"* ]]
+    [[ "$output" == *"PASSED"* ]]
+    [[ "$status" -eq 0 ]]
+}
+
+@test "--repo flag with run-id targets specified repository" {
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/other-owner/other-repo/actions/runs/55555",
+        "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]
+    }'
+
+    run run_script --repo other-owner/other-repo 55555
+
+    [[ "$output" == *"other-owner/other-repo"* ]]
+    [[ "$output" == *"Watching specified run: 55555"* ]]
+    [[ "$output" == *"PASSED"* ]]
+    [[ "$status" -eq 0 ]]
+}
+
 @test "shows commit and PR links" {
     export MOCK_RUN_LIST_JSON='[{"databaseId": 12345, "status": "completed", "conclusion": "success", "name": "CI"}]'
     export MOCK_RUN_VIEW_JSON='{

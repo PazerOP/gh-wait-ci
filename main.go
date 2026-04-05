@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -77,6 +78,26 @@ type RepoInfo struct {
 	NameWithOwner string `json:"nameWithOwner"`
 }
 
+type RemoteRepoInfo struct {
+	DefaultBranch string `json:"default_branch"`
+}
+
+type RemoteCommitInfo struct {
+	SHA string `json:"sha"`
+}
+
+// repoFlag holds the --repo/-R flag value. When set, it overrides repo detection
+// and causes gh commands to target the specified repository.
+var repoFlag string
+
+// ghCommand runs a gh CLI command, automatically injecting -R <repo> when repoFlag is set.
+func ghCommand(args ...string) (string, error) {
+	if repoFlag != "" {
+		args = append([]string{"-R", repoFlag}, args...)
+	}
+	return runCommand("gh", args...)
+}
+
 func runCommand(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	var stdout, stderr bytes.Buffer
@@ -120,6 +141,10 @@ func checkPushed() (string, bool, error) {
 func getContext(commitRef string) (*Context, error) {
 	ctx := &Context{}
 
+	if repoFlag != "" {
+		return getRemoteContext()
+	}
+
 	commit, err := runCommand("git", "rev-parse", commitRef)
 	if err != nil {
 		return nil, fmt.Errorf("could not get commit: %w", err)
@@ -154,6 +179,45 @@ func getContext(commitRef string) (*Context, error) {
 	return ctx, nil
 }
 
+// getRemoteContext builds a Context by querying the remote repository specified by repoFlag.
+func getRemoteContext() (*Context, error) {
+	ctx := &Context{}
+	ctx.Repo = repoFlag
+
+	// Get the default branch of the remote repo
+	repoJSON, err := runCommand("gh", "api", fmt.Sprintf("repos/%s", repoFlag))
+	if err != nil {
+		return nil, fmt.Errorf("could not query repository %s: %w", repoFlag, err)
+	}
+
+	var remoteRepo RemoteRepoInfo
+	if err := json.Unmarshal([]byte(repoJSON), &remoteRepo); err != nil {
+		return nil, fmt.Errorf("could not parse repo info: %w", err)
+	}
+	ctx.Branch = remoteRepo.DefaultBranch
+
+	// Get the latest commit on the default branch
+	commitJSON, err := runCommand("gh", "api", fmt.Sprintf("repos/%s/commits/%s", repoFlag, ctx.Branch))
+	if err != nil {
+		return nil, fmt.Errorf("could not get latest commit for %s: %w", ctx.Branch, err)
+	}
+
+	var commitInfo RemoteCommitInfo
+	if err := json.Unmarshal([]byte(commitJSON), &commitInfo); err != nil {
+		return nil, fmt.Errorf("could not parse commit info: %w", err)
+	}
+	ctx.Commit = commitInfo.SHA
+	if len(ctx.Commit) >= 7 {
+		ctx.ShortCommit = ctx.Commit[:7]
+	} else {
+		ctx.ShortCommit = ctx.Commit
+	}
+
+	ctx.CommitURL = fmt.Sprintf("https://github.com/%s/commit/%s", ctx.Repo, ctx.Commit)
+
+	return ctx, nil
+}
+
 func printContext(ctx *Context) {
 	printInfo(fmt.Sprintf("Repository: %s", ctx.Repo))
 	printInfo(fmt.Sprintf("Branch: %s", ctx.Branch))
@@ -162,7 +226,7 @@ func printContext(ctx *Context) {
 }
 
 func getPRInfo(ctx *Context) {
-	prJSON, err := runCommand("gh", "pr", "view", "--json", "number,url")
+	prJSON, err := ghCommand("pr", "view", "--json", "number,url")
 	if err != nil {
 		return
 	}
@@ -190,7 +254,7 @@ func findRuns(ctx *Context, runID string) ([]int, error) {
 
 	var runs []RunInfo
 	for i := 1; i <= 5; i++ {
-		runsJSON, err := runCommand("gh", "run", "list", "--commit", ctx.Commit,
+		runsJSON, err := ghCommand("run", "list", "--commit", ctx.Commit,
 			"--json", "databaseId,status,conclusion,name", "--limit", "10")
 		if err != nil {
 			runsJSON = "[]"
@@ -226,7 +290,7 @@ func findRuns(ctx *Context, runID string) ([]int, error) {
 }
 
 func getRunDetail(runID int) (*RunDetail, error) {
-	runJSON, err := runCommand("gh", "run", "view", strconv.Itoa(runID),
+	runJSON, err := ghCommand("run", "view", strconv.Itoa(runID),
 		"--json", "status,conclusion,name,jobs,url")
 	if err != nil {
 		return nil, err
@@ -398,34 +462,48 @@ func showResults(runIDs []int, ctx *Context) bool {
 }
 
 func main() {
-	failFast := flag.Bool("fail-fast", false, "Exit immediately when any job fails")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] [run-id]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Wait for GitHub Actions CI to complete and report results.\n")
-		fmt.Fprintf(os.Stderr, "If no run-id provided, waits for ALL runs for the current commit.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
+	rootCmd := &cobra.Command{
+		Use:   "gh-wait-ci [run-id]",
+		Short: "Wait for GitHub Actions CI to complete and report results",
+		Long:  "Wait for GitHub Actions CI to complete and report results.\nIf no run-id provided, waits for ALL runs for the current commit.",
+		Args:  cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:  run,
 	}
-	flag.Parse()
 
-	if err := checkGitRepo(); err != nil {
-		printError(err.Error())
+	rootCmd.Flags().BoolP("fail-fast", "", false, "Exit immediately when any job fails")
+	rootCmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Target repository in [HOST/]OWNER/REPO format")
+
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+func run(cmd *cobra.Command, args []string) error {
+	failFast, _ := cmd.Flags().GetBool("fail-fast")
+
+	// When --repo is not set, we need to be in a git repository
+	if repoFlag == "" {
+		if err := checkGitRepo(); err != nil {
+			printError(err.Error())
+			return err
+		}
 	}
 
 	runID := ""
-	if flag.NArg() > 0 {
-		runID = flag.Arg(0)
+	if len(args) > 0 {
+		runID = args[0]
 	}
 
 	// Determine which commit to use
 	commitRef := "HEAD"
-	if runID == "" {
-		// Only check for unpushed commits when auto-detecting runs
+	if runID == "" && repoFlag == "" {
+		// Only check for unpushed commits when auto-detecting runs from local repo
 		ref, usedUpstream, err := checkPushed()
 		if err != nil {
 			printError(err.Error())
-			os.Exit(1)
+			return err
 		}
 		if usedUpstream {
 			printWarn("Warning: You have unpushed commits. Watching the latest pushed commit instead.")
@@ -437,7 +515,7 @@ func main() {
 	ctx, err := getContext(commitRef)
 	if err != nil {
 		printError(err.Error())
-		os.Exit(1)
+		return err
 	}
 
 	printContext(ctx)
@@ -446,22 +524,23 @@ func main() {
 	runIDs, err := findRuns(ctx, runID)
 	if err != nil {
 		printError(err.Error())
-		os.Exit(1)
+		return err
 	}
 
-	failFastMode := *failFast
-	hasFailure, err := waitForRuns(runIDs, failFastMode)
+	hasFailure, err := waitForRuns(runIDs, failFast)
 	if err != nil {
 		printError(err.Error())
-		os.Exit(1)
+		return err
 	}
 
-	if failFastMode && hasFailure {
+	if failFast && hasFailure {
 		showResults(runIDs, ctx)
-		os.Exit(1)
+		return fmt.Errorf("CI failed")
 	}
 
 	if !showResults(runIDs, ctx) {
-		os.Exit(1)
+		return fmt.Errorf("CI failed")
 	}
+
+	return nil
 }
