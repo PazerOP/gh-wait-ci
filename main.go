@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -461,29 +462,38 @@ func showResults(runIDs []int, ctx *Context) bool {
 }
 
 func main() {
-	failFast := flag.Bool("fail-fast", false, "Exit immediately when any job fails")
-	flag.StringVar(&repoFlag, "repo", "", "Target repository in [HOST/]OWNER/REPO format")
-	flag.StringVar(&repoFlag, "R", "", "Target repository in [HOST/]OWNER/REPO format (shorthand)")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] [run-id]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Wait for GitHub Actions CI to complete and report results.\n")
-		fmt.Fprintf(os.Stderr, "If no run-id provided, waits for ALL runs for the current commit.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
+	rootCmd := &cobra.Command{
+		Use:   "gh-wait-ci [run-id]",
+		Short: "Wait for GitHub Actions CI to complete and report results",
+		Long:  "Wait for GitHub Actions CI to complete and report results.\nIf no run-id provided, waits for ALL runs for the current commit.",
+		Args:  cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:  run,
 	}
-	flag.Parse()
+
+	rootCmd.Flags().BoolP("fail-fast", "", false, "Exit immediately when any job fails")
+	rootCmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Target repository in [HOST/]OWNER/REPO format")
+
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func run(cmd *cobra.Command, args []string) error {
+	failFast, _ := cmd.Flags().GetBool("fail-fast")
 
 	// When --repo is not set, we need to be in a git repository
 	if repoFlag == "" {
 		if err := checkGitRepo(); err != nil {
 			printError(err.Error())
-			os.Exit(1)
+			return err
 		}
 	}
 
 	runID := ""
-	if flag.NArg() > 0 {
-		runID = flag.Arg(0)
+	if len(args) > 0 {
+		runID = args[0]
 	}
 
 	// Determine which commit to use
@@ -493,7 +503,7 @@ func main() {
 		ref, usedUpstream, err := checkPushed()
 		if err != nil {
 			printError(err.Error())
-			os.Exit(1)
+			return err
 		}
 		if usedUpstream {
 			printWarn("Warning: You have unpushed commits. Watching the latest pushed commit instead.")
@@ -505,7 +515,7 @@ func main() {
 	ctx, err := getContext(commitRef)
 	if err != nil {
 		printError(err.Error())
-		os.Exit(1)
+		return err
 	}
 
 	printContext(ctx)
@@ -514,22 +524,23 @@ func main() {
 	runIDs, err := findRuns(ctx, runID)
 	if err != nil {
 		printError(err.Error())
-		os.Exit(1)
+		return err
 	}
 
-	failFastMode := *failFast
-	hasFailure, err := waitForRuns(runIDs, failFastMode)
+	hasFailure, err := waitForRuns(runIDs, failFast)
 	if err != nil {
 		printError(err.Error())
-		os.Exit(1)
+		return err
 	}
 
-	if failFastMode && hasFailure {
+	if failFast && hasFailure {
 		showResults(runIDs, ctx)
-		os.Exit(1)
+		return fmt.Errorf("CI failed")
 	}
 
 	if !showResults(runIDs, ctx) {
-		os.Exit(1)
+		return fmt.Errorf("CI failed")
 	}
+
+	return nil
 }
