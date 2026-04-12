@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -173,7 +172,7 @@ func getContext(commitRef string) (*Context, error) {
 	ctx := &Context{}
 
 	if repoFlag != "" {
-		return getRemoteContext()
+		return getRemoteContext(commitRef)
 	}
 
 	commit, err := runCommand("git", "rev-parse", commitRef)
@@ -211,9 +210,32 @@ func getContext(commitRef string) (*Context, error) {
 }
 
 // getRemoteContext builds a Context by querying the remote repository specified by repoFlag.
-func getRemoteContext() (*Context, error) {
+// When commitRef is a specific SHA (not "HEAD"), it resolves that SHA directly via the API.
+// Otherwise it looks up the latest commit on the default branch.
+func getRemoteContext(commitRef string) (*Context, error) {
 	ctx := &Context{}
 	ctx.Repo = repoFlag
+
+	if commitRef != "" && commitRef != "HEAD" {
+		// Resolve the specific SHA via the API (handles partial SHAs)
+		commitJSON, err := runCommand("gh", "api", fmt.Sprintf("repos/%s/commits/%s", repoFlag, commitRef))
+		if err != nil {
+			return nil, fmt.Errorf("could not get commit %s for %s: %w", commitRef, repoFlag, err)
+		}
+
+		var commitInfo RemoteCommitInfo
+		if err := json.Unmarshal([]byte(commitJSON), &commitInfo); err != nil {
+			return nil, fmt.Errorf("could not parse commit info: %w", err)
+		}
+		ctx.Commit = commitInfo.SHA
+		if len(ctx.Commit) >= 7 {
+			ctx.ShortCommit = ctx.Commit[:7]
+		} else {
+			ctx.ShortCommit = ctx.Commit
+		}
+		ctx.CommitURL = fmt.Sprintf("https://github.com/%s/commit/%s", ctx.Repo, ctx.Commit)
+		return ctx, nil
+	}
 
 	// Get the default branch of the remote repo
 	repoJSON, err := runCommand("gh", "api", fmt.Sprintf("repos/%s", repoFlag))
@@ -251,7 +273,9 @@ func getRemoteContext() (*Context, error) {
 
 func printContext(ctx *Context) {
 	printInfo(fmt.Sprintf("Repository: %s", ctx.Repo))
-	printInfo(fmt.Sprintf("Branch: %s", ctx.Branch))
+	if ctx.Branch != "" {
+		printInfo(fmt.Sprintf("Branch: %s", ctx.Branch))
+	}
 	printInfo(fmt.Sprintf("Commit: %s", ctx.ShortCommit))
 	fmt.Println()
 }
@@ -271,254 +295,33 @@ func getPRInfo(ctx *Context) {
 	ctx.PRURL = prInfo.URL
 }
 
-func findRuns(ctx *Context, runID string) ([]int, error) {
-	if runID != "" {
-		id, err := strconv.Atoi(runID)
-		if err != nil {
-			return nil, fmt.Errorf("invalid run ID: %s", runID)
-		}
-		printInfo(fmt.Sprintf("Watching specified run: %s", runID))
-		return []int{id}, nil
-	}
-
-	printInfo(fmt.Sprintf("Finding workflow runs for commit %s...", ctx.ShortCommit))
-
-	var runs []RunInfo
-	for i := 1; i <= 5; i++ {
-		runsJSON, err := ghCommand("run", "list", "--commit", ctx.Commit,
-			"--json", "databaseId,status,conclusion,name", "--limit", "10")
-		if err != nil {
-			runsJSON = "[]"
-		}
-
-		if err := json.Unmarshal([]byte(runsJSON), &runs); err != nil {
-			runs = []RunInfo{}
-		}
-
-		if len(runs) > 0 {
-			break
-		}
-
-		if i < 5 {
-			printWarn(fmt.Sprintf("No runs found yet, waiting 5 seconds... (attempt %d/5)", i))
-			time.Sleep(5 * time.Second)
-		}
-	}
-
-	if len(runs) == 0 {
-		return nil, fmt.Errorf("no workflow runs found for commit %s", ctx.ShortCommit)
-	}
-
-	runIDs := make([]int, len(runs))
-	printInfo(fmt.Sprintf("Found %d workflow run(s):", len(runs)))
-	for i, run := range runs {
-		runIDs[i] = run.DatabaseID
-		fmt.Printf("  %d %s\n", run.DatabaseID, run.Name)
-	}
-	fmt.Println()
-
-	return runIDs, nil
-}
-
-func getRunDetail(runID int) (*RunDetail, error) {
-	runJSON, err := ghCommand("run", "view", strconv.Itoa(runID),
-		"--json", "status,conclusion,name,jobs,url")
-	if err != nil {
-		return nil, err
-	}
-
-	var detail RunDetail
-	if err := json.Unmarshal([]byte(runJSON), &detail); err != nil {
-		return nil, err
-	}
-
-	return &detail, nil
-}
-
-// waitForRuns waits for all runs to complete. If failFast is true, returns immediately
-// when any job fails. Returns (hasFailure, error).
-func waitForRuns(runIDs []int, failFast bool) (bool, error) {
-	printInfo("Waiting for all runs to complete...")
-	fmt.Println()
-
-	lastState := ""
-	firstPrint := true
-	hasFailure := false
-
-	for {
-		allDone := true
-		totalJobs := 0
-		completedJobs := 0
-		currentState := ""
-		var output strings.Builder
-
-		for _, runID := range runIDs {
-			detail, err := getRunDetail(runID)
-			if err != nil {
-				continue
-			}
-
-			for _, job := range detail.Jobs {
-				totalJobs++
-				currentState += fmt.Sprintf("%d:%s:%s:%s|", runID, job.Name, job.Status, job.Conclusion)
-
-				var line string
-				if job.Status == "completed" {
-					completedJobs++
-					switch job.Conclusion {
-					case "success":
-						line = fmt.Sprintf("  ✅ %s / %s\n", detail.Name, job.Name)
-					case "skipped":
-						line = fmt.Sprintf("  ⏭️  %s / %s (skipped)\n", detail.Name, job.Name)
-					case "cancelled":
-						line = fmt.Sprintf("  ⛔ %s / %s (cancelled)\n", detail.Name, job.Name)
-						hasFailure = true
-					default:
-						line = fmt.Sprintf("  ❌ %s / %s (%s)\n", detail.Name, job.Name, job.Conclusion)
-						hasFailure = true
-					}
-				} else if job.Status == "in_progress" {
-					line = fmt.Sprintf("  🔄 %s / %s\n", detail.Name, job.Name)
-				} else if job.Status == "queued" || job.Status == "waiting" {
-					line = fmt.Sprintf("  ⏳ %s / %s\n", detail.Name, job.Name)
-				} else {
-					line = fmt.Sprintf("  ⏳ %s / %s (%s)\n", detail.Name, job.Name, job.Status)
-				}
-				output.WriteString(line)
-			}
-
-			if detail.Status != "completed" {
-				allDone = false
-			}
-		}
-
-		percent := 0
-		if totalJobs > 0 {
-			percent = completedJobs * 100 / totalJobs
-		}
-
-		if currentState != lastState {
-			if !firstPrint {
-				linesToClear := totalJobs + 1
-				for i := 0; i < linesToClear; i++ {
-					fmt.Print("\033[A\033[2K")
-				}
-			}
-			firstPrint = false
-
-			printInfo(fmt.Sprintf("Progress: %d/%d (%d%%)", completedJobs, totalJobs, percent))
-			fmt.Print(output.String())
-			lastState = currentState
-		}
-
-		if failFast && hasFailure {
-			fmt.Println()
-			printWarn("Failure detected, exiting early (--fail-fast)")
-			return true, nil
-		}
-
-		if allDone {
-			break
-		}
-
-		time.Sleep(5 * time.Second)
-	}
-	fmt.Println()
-
-	return hasFailure, nil
-}
-
-func showResults(runIDs []int, ctx *Context) bool {
-	allSuccess := true
-
-	for _, runID := range runIDs {
-		detail, err := getRunDetail(runID)
-		if err != nil {
-			printError(fmt.Sprintf("Could not get run details for %d", runID))
-			continue
-		}
-
-		fmt.Println("════════════════════════════════════════════════════════════════")
-		if detail.Conclusion == "success" {
-			printSuccess(fmt.Sprintf("✅ %s PASSED", detail.Name))
-		} else {
-			printError(fmt.Sprintf("❌ %s FAILED", detail.Name))
-			allSuccess = false
-		}
-		fmt.Println("════════════════════════════════════════════════════════════════")
-		fmt.Println()
-
-		printInfo("Jobs:")
-		for _, job := range detail.Jobs {
-			var icon string
-			switch job.Conclusion {
-			case "success":
-				icon = "✅"
-			case "failure":
-				icon = "❌"
-			case "cancelled":
-				icon = "⛔"
-			case "skipped":
-				icon = "⏭️ "
-			default:
-				icon = "⏳"
-			}
-
-			if job.Conclusion == "failure" {
-				fmt.Printf("  %s %s  →  gh run view --log --job %d\n", icon, job.Name, job.DatabaseID)
-			} else {
-				fmt.Printf("  %s %s\n", icon, job.Name)
-			}
-		}
-		fmt.Println()
-
-		fmt.Printf("     Run:  %s\n", detail.URL)
-
-		if detail.Conclusion != "success" {
-			fmt.Println()
-			printWarn("View all failed logs:")
-			fmt.Printf("  gh run view %d --log-failed\n", runID)
-			fmt.Println()
-		}
-	}
-
-	printInfo("Links:")
-	fmt.Printf("  Commit:  %s\n", ctx.CommitURL)
-	if ctx.PRURL != "" {
-		fmt.Printf("      PR:  %s\n", ctx.PRURL)
-	}
-	fmt.Println()
-
-	return allSuccess
-}
-
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "gh-wait-ci [run-id]",
 		Short: "Wait for GitHub Actions CI to complete and report results",
 		Long:  "Wait for GitHub Actions CI to complete and report results.\nIf no run-id provided, waits for ALL runs for the current commit.",
 		Args:  cobra.MaximumNArgs(1),
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		RunE:  run,
+		SilenceUsage: true,
+		RunE:         run,
 	}
 
 	rootCmd.Flags().BoolP("fail-fast", "", false, "Exit immediately when any job fails")
 	rootCmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Target repository in [HOST/]OWNER/REPO format")
+	rootCmd.Flags().StringP("sha", "s", "", "Commit SHA to watch (full or partial)")
 
-	if err := rootCmd.Execute(); err != nil {
+	if rootCmd.Execute() != nil {
 		os.Exit(1)
 	}
 }
 
 func run(cmd *cobra.Command, args []string) error {
 	failFast, _ := cmd.Flags().GetBool("fail-fast")
+	shaFlag, _ := cmd.Flags().GetString("sha")
 
 	// When --repo is not set, we need to be in a git repository.
 	// If we're not in one, try to find one in a subdirectory.
 	if repoFlag == "" {
 		if err := findGitRepo(); err != nil {
-			printError(err.Error())
 			return err
 		}
 	}
@@ -530,11 +333,12 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Determine which commit to use
 	commitRef := "HEAD"
-	if runID == "" && repoFlag == "" {
+	if shaFlag != "" {
+		commitRef = shaFlag
+	} else if runID == "" && repoFlag == "" {
 		// Only check for unpushed commits when auto-detecting runs from local repo
 		ref, usedUpstream, err := checkPushed()
 		if err != nil {
-			printError(err.Error())
 			return err
 		}
 		if usedUpstream {
@@ -546,7 +350,6 @@ func run(cmd *cobra.Command, args []string) error {
 
 	ctx, err := getContext(commitRef)
 	if err != nil {
-		printError(err.Error())
 		return err
 	}
 
@@ -555,13 +358,11 @@ func run(cmd *cobra.Command, args []string) error {
 
 	runIDs, err := findRuns(ctx, runID)
 	if err != nil {
-		printError(err.Error())
 		return err
 	}
 
 	hasFailure, err := waitForRuns(runIDs, failFast)
 	if err != nil {
-		printError(err.Error())
 		return err
 	}
 
