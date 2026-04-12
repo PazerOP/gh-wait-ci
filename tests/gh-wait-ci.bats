@@ -181,3 +181,59 @@ run_script() {
     [[ "$output" == *"PR:"* ]]
     [[ "$output" == *"github.com"* ]]
 }
+
+@test "auto-discovers single git repo in subdirectory" {
+    export MOCK_GIT_NOT_IN_REPO=true
+    export MOCK_RUN_LIST_JSON='[{"databaseId": 12345, "status": "completed", "conclusion": "success", "name": "CI"}]'
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/test-owner/test-repo/actions/runs/12345",
+        "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]
+    }'
+
+    TMPDIR=$(mktemp -d)
+    mkdir -p "$TMPDIR/my-project/.git"
+
+    cd "$TMPDIR"
+    run "$BATS_TEST_DIRNAME/../gh-wait-ci"
+
+    [[ "$output" == *"Found git repository in ./my-project"* ]]
+    [[ "$output" == *"PASSED"* ]]
+    [[ "$status" -eq 0 ]]
+
+    rm -rf "$TMPDIR"
+}
+
+@test "errors with list when multiple git repos found in subdirectories" {
+    export MOCK_GIT_NOT_IN_REPO=true
+
+    TMPDIR=$(mktemp -d)
+    mkdir -p "$TMPDIR/repo-a/.git"
+    mkdir -p "$TMPDIR/repo-b/.git"
+
+    cd "$TMPDIR"
+    run "$BATS_TEST_DIRNAME/../gh-wait-ci"
+
+    [[ "$output" == *"multiple repositories"* ]]
+    [[ "$output" == *"repo-a"* ]]
+    [[ "$output" == *"repo-b"* ]]
+    [[ "$status" -ne 0 ]]
+
+    rm -rf "$TMPDIR"
+}
+
+@test "errors when not in git repo and no subdirectory repos found" {
+    export MOCK_GIT_NOT_IN_REPO=true
+
+    TMPDIR=$(mktemp -d)
+
+    cd "$TMPDIR"
+    run "$BATS_TEST_DIRNAME/../gh-wait-ci"
+
+    [[ "$output" == *"not in a git repository"* ]]
+    [[ "$status" -ne 0 ]]
+
+    rm -rf "$TMPDIR"
+}

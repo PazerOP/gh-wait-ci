@@ -110,12 +110,43 @@ func runCommand(name string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func checkGitRepo() error {
+// findGitRepo checks if the current directory is inside a git repository.
+// If not, it searches immediate subdirectories for git repos and changes
+// into the directory if exactly one is found.
+func findGitRepo() error {
 	_, err := runCommand("git", "rev-parse", "--git-dir")
+	if err == nil {
+		return nil
+	}
+
+	// Not in a git repo — search immediate subdirectories
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		return fmt.Errorf("not in a git repository")
 	}
-	return nil
+
+	var repos []string
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		if _, statErr := os.Stat(entry.Name() + "/.git"); statErr == nil {
+			repos = append(repos, entry.Name())
+		}
+	}
+
+	switch len(repos) {
+	case 0:
+		return fmt.Errorf("not in a git repository")
+	case 1:
+		printInfo(fmt.Sprintf("Found git repository in ./%s, using it", repos[0]))
+		if err := os.Chdir(repos[0]); err != nil {
+			return fmt.Errorf("could not enter repository %s: %w", repos[0], err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("not in a git repository, found multiple repositories: %s\nPlease cd into one or use --repo/-R", strings.Join(repos, ", "))
+	}
 }
 
 // checkPushed checks if there are unpushed commits. Returns the commit to use
@@ -483,9 +514,10 @@ func main() {
 func run(cmd *cobra.Command, args []string) error {
 	failFast, _ := cmd.Flags().GetBool("fail-fast")
 
-	// When --repo is not set, we need to be in a git repository
+	// When --repo is not set, we need to be in a git repository.
+	// If we're not in one, try to find one in a subdirectory.
 	if repoFlag == "" {
-		if err := checkGitRepo(); err != nil {
+		if err := findGitRepo(); err != nil {
 			printError(err.Error())
 			return err
 		}
