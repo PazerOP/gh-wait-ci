@@ -4,6 +4,10 @@
 case "$1" in
     rev-parse)
         if [[ "$2" == "--git-dir" ]]; then
+            if [[ "${MOCK_GIT_NOT_IN_REPO:-}" == "true" ]]; then
+                echo "fatal: not a git repository (or any of the parent directories): .git" >&2
+                exit 128
+            fi
             echo ".git"
         elif [[ "$2" == "HEAD" ]]; then
             echo "abc123def456789"
