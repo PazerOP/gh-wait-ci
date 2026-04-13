@@ -237,3 +237,48 @@ run_script() {
 
     rm -rf "$TMPDIR"
 }
+
+@test "--sha flag uses specified commit" {
+    export MOCK_REV_PARSE="deadbeef12345678"
+    export MOCK_REV_PARSE_SHORT="deadbee"
+    export MOCK_RUN_LIST_JSON='[{"databaseId": 12345, "status": "completed", "conclusion": "success", "name": "CI"}]'
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/test-owner/test-repo/actions/runs/12345",
+        "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]
+    }'
+
+    run run_script --sha deadbeef12345678
+
+    [[ "$output" == *"deadbee"* ]]
+    [[ "$output" == *"PASSED"* ]]
+    [[ "$status" -eq 0 ]]
+}
+
+@test "--sha with --repo uses specified commit on remote" {
+    export MOCK_API_COMMITS_JSON='{"sha": "deadbeef12345678"}'
+    export MOCK_RUN_LIST_JSON='[{"databaseId": 99999, "status": "completed", "conclusion": "success", "name": "CI"}]'
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/other-owner/other-repo/actions/runs/99999",
+        "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]
+    }'
+
+    run run_script --sha deadbeef --repo other-owner/other-repo
+
+    [[ "$output" == *"other-owner/other-repo"* ]]
+    [[ "$output" == *"deadbee"* ]]
+    [[ "$output" == *"PASSED"* ]]
+    [[ "$status" -eq 0 ]]
+}
+
+@test "unknown flag prints error message" {
+    run run_script --bogus
+
+    [[ "$output" == *"unknown flag"* ]]
+    [[ "$status" -ne 0 ]]
+}

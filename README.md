@@ -14,8 +14,20 @@ gh extension install PazerOP/gh-wait-ci
 # Wait for CI on current commit
 gh wait-ci
 
+# Wait for a specific commit
+gh wait-ci --sha c79dcca
+
 # Wait for a specific run by ID
 gh wait-ci 12345678
+
+# Wait for CI on a remote repo
+gh wait-ci --repo owner/repo
+
+# Wait for a specific commit on a remote repo
+gh wait-ci --sha c79dcca --repo owner/repo
+
+# Exit immediately on first failure
+gh wait-ci --fail-fast
 ```
 
 ## What it does
@@ -30,4 +42,3 @@ gh wait-ci 12345678
 ## Requirements
 
 - `gh` CLI authenticated
-- `jq` for JSON parsing

@@ -9,10 +9,10 @@ case "$1" in
                 exit 128
             fi
             echo ".git"
-        elif [[ "$2" == "HEAD" ]]; then
-            echo "abc123def456789"
         elif [[ "$2" == "--short" ]]; then
-            echo "abc123d"
+            echo "${MOCK_REV_PARSE_SHORT:-abc123d}"
+        else
+            echo "${MOCK_REV_PARSE:-abc123def456789}"
         fi
         ;;
     log)
