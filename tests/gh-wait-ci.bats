@@ -280,4 +280,5 @@ run_script() {
     run run_script --bogus
 
     [[ "$output" == *"unknown flag"* ]]
+    [[ "$status" -ne 0 ]]
 }

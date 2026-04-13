@@ -92,6 +92,7 @@ func waitForRuns(runIDs []int, failFast bool) (bool, error) {
 		for _, runID := range runIDs {
 			detail, err := getRunDetail(runID)
 			if err != nil {
+				allDone = false
 				continue
 			}
 
@@ -172,6 +173,7 @@ func showResults(runIDs []int, ctx *Context) bool {
 		detail, err := getRunDetail(runID)
 		if err != nil {
 			printError(fmt.Sprintf("Could not get run details for %d", runID))
+			allSuccess = false
 			continue
 		}
 
