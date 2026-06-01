@@ -8,9 +8,15 @@ jobs:
   stream:
     runs-on: ubuntu-latest
     steps:
-      - name: Slow stream
+      - name: Stream A
         run: |
-          for i in $(seq 1 60); do
-            echo "STREAM-LINE $i at $(date -u +%H:%M:%S)"
+          for i in $(seq 1 200); do
+            echo "STREAM-A $i at $(date -u +%H:%M:%S)"
+            sleep 2
+          done
+      - name: Stream B
+        run: |
+          for i in $(seq 1 400); do
+            echo "STREAM-B $i at $(date -u +%H:%M:%S)"
             sleep 2
           done
