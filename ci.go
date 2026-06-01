@@ -74,7 +74,7 @@ func getRunDetail(runID int) (*RunDetail, error) {
 
 // waitForRuns waits for all runs to complete. If failFast is true, returns immediately
 // when any job fails. Returns (hasFailure, error).
-func waitForRuns(runIDs []int, failFast bool) (bool, error) {
+func waitForRuns(runIDs []int, failFast bool, interval time.Duration) (bool, error) {
 	printInfo("Waiting for all runs to complete...")
 	fmt.Println()
 
@@ -159,7 +159,7 @@ func waitForRuns(runIDs []int, failFast bool) (bool, error) {
 			break
 		}
 
-		time.Sleep(5 * time.Second)
+		time.Sleep(interval)
 	}
 	fmt.Println()
 

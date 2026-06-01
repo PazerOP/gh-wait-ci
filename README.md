@@ -28,7 +28,23 @@ gh wait-ci --sha c79dcca --repo owner/repo
 
 # Exit immediately on first failure
 gh wait-ci --fail-fast
+
+# Stream each job's logs live as they run (like the GitHub web UI)
+gh wait-ci --logs
+
+# Stream logs and poll a little faster
+gh wait-ci --logs --interval 3
 ```
+
+## Flags
+
+| Flag | Description |
+| --- | --- |
+| `-l`, `--logs` | Stream job logs live as they run, instead of the status summary |
+| `-i`, `--interval` | Polling interval in seconds (default `5`) |
+| `--fail-fast` | Exit immediately when any job fails |
+| `-s`, `--sha` | Commit SHA to watch (full or partial) |
+| `-R`, `--repo` | Target repository in `[HOST/]OWNER/REPO` format |
 
 ## What it does
 
