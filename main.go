@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -55,6 +56,14 @@ type RunInfo struct {
 
 type Job struct {
 	DatabaseID int    `json:"databaseId"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Steps      []Step `json:"steps"`
+}
+
+type Step struct {
+	Number     int    `json:"number"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
@@ -308,6 +317,8 @@ func main() {
 	rootCmd.Flags().BoolP("fail-fast", "", false, "Exit immediately when any job fails")
 	rootCmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Target repository in [HOST/]OWNER/REPO format")
 	rootCmd.Flags().StringP("sha", "s", "", "Commit SHA to watch (full or partial)")
+	rootCmd.Flags().BoolP("logs", "l", false, "Stream job logs live as they run, instead of a status summary")
+	rootCmd.Flags().IntP("interval", "i", 5, "Polling interval in seconds")
 
 	if rootCmd.Execute() != nil {
 		os.Exit(1)
@@ -317,6 +328,12 @@ func main() {
 func run(cmd *cobra.Command, args []string) error {
 	failFast, _ := cmd.Flags().GetBool("fail-fast")
 	shaFlag, _ := cmd.Flags().GetString("sha")
+	logsFlag, _ := cmd.Flags().GetBool("logs")
+	intervalSec, _ := cmd.Flags().GetInt("interval")
+	interval := time.Duration(intervalSec) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
 
 	// When --repo is not set, we need to be in a git repository.
 	// If we're not in one, try to find one in a subdirectory.
@@ -361,7 +378,12 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	hasFailure, err := waitForRuns(runIDs, failFast)
+	var hasFailure bool
+	if logsFlag {
+		hasFailure, err = streamLogs(runIDs, ctx, failFast, interval)
+	} else {
+		hasFailure, err = waitForRuns(runIDs, failFast, interval)
+	}
 	if err != nil {
 		return err
 	}

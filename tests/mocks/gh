@@ -57,7 +57,11 @@ case "$1" in
         ;;
     api)
         endpoint="$2"
-        if [[ "$endpoint" == repos/*/commits/* ]]; then
+        if [[ "$endpoint" == repos/*/actions/jobs/*/logs ]]; then
+            # Plain-text job log (used by --logs streaming mode).
+            # MOCK_JOB_LOG provides the body; absent => empty (no logs yet).
+            printf '%s' "${MOCK_JOB_LOG:-}"
+        elif [[ "$endpoint" == repos/*/commits/* ]]; then
             if [[ -n "${MOCK_API_COMMITS_JSON:-}" ]]; then
                 echo "$MOCK_API_COMMITS_JSON"
             else

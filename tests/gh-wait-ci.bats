@@ -282,3 +282,56 @@ run_script() {
     [[ "$output" == *"unknown flag"* ]]
     [[ "$status" -ne 0 ]]
 }
+
+@test "--logs streams job log content with timestamps stripped" {
+    export MOCK_RUN_LIST_JSON='[{"databaseId": 12345, "status": "completed", "conclusion": "success", "name": "CI"}]'
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/test-owner/test-repo/actions/runs/12345",
+        "jobs": [{"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111}]
+    }'
+    export MOCK_JOB_LOG='2026-06-01T02:05:01.1234567Z Hello from CI
+2026-06-01T02:05:02.7654321Z ##[group]Run the build
+2026-06-01T02:05:03.0000000Z compiling everything
+2026-06-01T02:05:04.0000000Z ##[endgroup]'
+
+    run run_script --logs
+
+    # Log content is shown
+    [[ "$output" == *"Hello from CI"* ]]
+    [[ "$output" == *"compiling everything"* ]]
+    # Raw RFC3339 timestamps are stripped
+    [[ "$output" != *"2026-06-01T02:05:01"* ]]
+    # Workflow command markers are normalized away
+    [[ "$output" != *"##[group]"* ]]
+    [[ "$output" != *"##[endgroup]"* ]]
+    [[ "$output" == *"Run the build"* ]]
+    # Still reports final status and exits cleanly
+    [[ "$output" == *"PASSED"* ]]
+    [[ "$status" -eq 0 ]]
+}
+
+@test "--logs prefixes lines with job name when multiple jobs run" {
+    export MOCK_RUN_LIST_JSON='[{"databaseId": 12345, "status": "completed", "conclusion": "success", "name": "CI"}]'
+    export MOCK_RUN_VIEW_JSON='{
+        "status": "completed",
+        "conclusion": "success",
+        "name": "CI",
+        "url": "https://github.com/test-owner/test-repo/actions/runs/12345",
+        "jobs": [
+            {"name": "build", "status": "completed", "conclusion": "success", "databaseId": 111},
+            {"name": "test", "status": "completed", "conclusion": "success", "databaseId": 222}
+        ]
+    }'
+    export MOCK_JOB_LOG='2026-06-01T02:05:01.1234567Z a log line'
+
+    run run_script --logs
+
+    # Each job's lines are tagged with "RunName / JobName"
+    [[ "$output" == *"CI / build"* ]]
+    [[ "$output" == *"CI / test"* ]]
+    [[ "$output" == *"a log line"* ]]
+    [[ "$status" -eq 0 ]]
+}
