@@ -10,13 +10,13 @@ jobs:
     steps:
       - name: Stream A
         run: |
-          for i in $(seq 1 200); do
+          for i in $(seq 1 300); do
             echo "STREAM-A $i at $(date -u +%H:%M:%S)"
             sleep 2
           done
       - name: Stream B
         run: |
-          for i in $(seq 1 400); do
+          for i in $(seq 1 600); do
             echo "STREAM-B $i at $(date -u +%H:%M:%S)"
             sleep 2
           done
