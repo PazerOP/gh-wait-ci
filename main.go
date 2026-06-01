@@ -59,6 +59,14 @@ type Job struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	Steps      []Step `json:"steps"`
+}
+
+type Step struct {
+	Number     int    `json:"number"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
 }
 
 type RunDetail struct {

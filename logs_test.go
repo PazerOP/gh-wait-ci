@@ -12,6 +12,7 @@ func TestCleanLogLine(t *testing.T) {
 		wantOK   bool
 	}{
 		{"plain line strips timestamp", ts + "hello world", "hello world", true},
+		{"leading BOM is stripped before timestamp", "\ufeff" + ts + "first line", "first line", true},
 		{"group marker normalized", ts + "##[group]Run the build", "‣ Run the build", true},
 		{"endgroup dropped", ts + "##[endgroup]", "", false},
 		{"error marker colorized", ts + "##[error]boom", colorRed + "boom" + colorReset, true},
