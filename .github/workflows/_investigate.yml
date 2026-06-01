@@ -1,0 +1,16 @@
+name: Investigate Live Logs
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slow stream
+        run: |
+          for i in $(seq 1 60); do
+            echo "STREAM-LINE $i at $(date -u +%H:%M:%S)"
+            sleep 2
+          done
